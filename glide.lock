@@ -1,8 +1,8 @@
 hash: f5290cc4a45844c70b97a13892a7d4390b7eb8c6eb50343e30dab0fdea93d8af
-updated: 2018-06-01T11:28:12.451309-06:00
+updated: 2018-06-01T16:26:17.788719-06:00
 imports:
 - name: github.com/aws/aws-sdk-go
-  version: 209f1e83c9ac446ac667c46d8c7d6af9640e815a
+  version: b2e866cc3d25372c6bde1ce18dbbf11862e954e9
   subpackages:
   - aws
   - aws/awserr
@@ -81,6 +81,8 @@ imports:
   version: 36b14963da70d11297d313183d7e6388c8510e1e
 - name: github.com/juju/ratelimit
   version: 5b9ff866471762aa2ab2dced63c9fb6f53921342
+- name: github.com/kelseyhightower/envconfig
+  version: dd1402a4d99de9ac2f396cd6fcb957bc2c695ec1
 - name: github.com/mailru/easyjson
   version: 2f5df55504ebc322e4d52d34df6a1f5b503bf26d
   subpackages:
@@ -98,13 +100,10 @@ imports:
 - name: golang.org/x/net
   version: 1c05540f6879653db88113bc4a2b70aec4bd491f
   subpackages:
-  - html
-  - html/atom
   - http2
   - http2/hpack
   - idna
   - lex/httplex
-  - websocket
 - name: golang.org/x/text
   version: b19bf474d317b857955b12035d2c5acb57ce8b01
   subpackages:
@@ -241,5 +240,4 @@ imports:
   version: 39a7bf85c140f972372c2a0d1ee40adbf0c8bfe1
   subpackages:
   - pkg/common
-  - pkg/util/proto
 testImports: []
