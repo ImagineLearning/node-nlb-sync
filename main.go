@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"log"
+	"net/http"
 	"strings"
 
 	"k8s.io/api/core/v1"
@@ -15,23 +17,32 @@ import (
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/elbv2"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+
 	"github.com/kelseyhightower/envconfig"
 )
 
 //Specification has the necessary environment variables
 type Specification struct {
 	AWSRegion        string `default:"us-west-2"`
-	LoadBalancerArns string `required:"true"`
+	TargetGroupArns  string `required:"true"`
+	LabelFilterKey   string `default:""`
+	LabelFilterValue string `default:""`
+	Prometheus       bool   `default:"true"`
+	Port             string `default:"8080"`
 }
 
 var s Specification
 
 func main() {
-	err := envconfig.Process("node-nlb-sync", &s)
+	err := envconfig.Process("nlb_sync", &s)
 	if err != nil {
-		panic("Could not read environment variables")
+		panic("Could not read environment variables: " + err.Error())
 	}
-	targetarns := strings.Split(",", s.LoadBalancerArns)
+
+	go provideMetrics()
+
+	targetarns := strings.Split(s.TargetGroupArns, ",")
 
 	// creates the in-cluster config
 	config, err := rest.InClusterConfig()
@@ -52,39 +63,57 @@ func main() {
 	)
 	svc := elbv2.New(sess)
 
+	fmt.Println("Reading node events...")
 	watcher, err := clientset.CoreV1().Nodes().Watch(metav1.ListOptions{})
 	channel := watcher.ResultChan()
 
 	for {
-
 		event := <-channel
 		currentNode := event.Object.(*v1.Node)
 
-		//process each target arn
+		//toss out modified events
+		if event.Type == watch.Modified {
+			continue
+		}
+
+		fmt.Printf("Processing node %s:%s with event %s \n", currentNode.Name, currentNode.Spec.ExternalID, event.Type)
+
+		//filter out certain nodes if desired based on the node labels
+		if s.LabelFilterKey != "" && s.LabelFilterValue != "" && currentNode.Labels[s.LabelFilterKey] != s.LabelFilterValue {
+			fmt.Printf("Ignoring node due to label filter: %s with label %s:%s \n", currentNode.Name, s.LabelFilterKey, currentNode.Labels[s.LabelFilterKey])
+			continue
+		}
+
 		for _, targetarn := range targetarns {
 			switch event.Type {
 			case watch.Added:
-				fmt.Printf("node added %s \n", currentNode.Spec.ExternalID)
 				result, err := AddTarget(svc, targetarn, currentNode.Spec.ExternalID)
 				if err != nil {
 					fmt.Printf("error encountered adding node %s to target arn %s \n", currentNode.Spec.ExternalID, targetarn)
 				} else {
-					fmt.Printf("results of %s being added as a target %s of %x \n", currentNode.Spec.ExternalID, targetarn, result.GoString())
+					fmt.Printf("results of %s being added as a target %s of %s \n", currentNode.Spec.ExternalID, targetarn, result.GoString())
 				}
 				break
 
 			case watch.Deleted:
-				fmt.Printf("node deleted %s \n", currentNode.Spec.ExternalID)
 				result, err := DeregisterTarget(svc, targetarn, currentNode.Spec.ExternalID)
 				if err != nil {
 					fmt.Printf("error encountered removing node %s to target arn %s \n", currentNode.Spec.ExternalID, targetarn)
 				} else {
-					fmt.Printf("results of %s being removed as a target %s of %x \n", currentNode.Spec.ExternalID, targetarn, result.GoString())
+					fmt.Printf("results of %s being removed as a target %s of %s \n", currentNode.Spec.ExternalID, targetarn, result.GoString())
 				}
 				break
 			}
-
 		}
+	}
+}
+
+func provideMetrics() {
+	if s.Prometheus == true {
+		//add prometheus metrics
+		port := ":" + s.Port
+		http.Handle("/metrics", promhttp.Handler())
+		log.Fatal(http.ListenAndServe(port, nil))
 	}
 }
 
