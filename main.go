@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 
 	"k8s.io/api/core/v1"
@@ -46,14 +47,20 @@ func main() {
 	}
 
 	go provideMetrics()
-	go handleMessages(s)
 
 	// Setup for a graceful worker exit on container shutdown
-	signalChan := handleSyscalls(syscall.SIGTERM, syscall.SIGINT)
-	log.Fatal(stopOnSignal(signalChan))
+	signalChan := make(chan os.Signal)
+	signal.Notify(signalChan, syscall.SIGTERM, syscall.SIGINT)
+
+	wg := &sync.WaitGroup{}
+	wg.Add(1)
+
+	go handleMessages(s, wg, signalChan)
+
+	wg.Wait()
 }
 
-func handleMessages(spec Specification) {
+func handleMessages(spec Specification, wg *sync.WaitGroup, exit <-chan os.Signal) {
 	targetarns := strings.Split(s.TargetGroupArns, ",")
 
 	// creates the in-cluster config
@@ -79,58 +86,49 @@ func handleMessages(spec Specification) {
 	channel := watcher.ResultChan()
 
 	for {
-		event := <-channel
-		currentNode := event.Object.(*v1.Node)
+		select {
+		case <-exit:
+			wg.Done()
+			return
+		case event := <-channel:
+			currentNode := event.Object.(*v1.Node)
 
-		//toss out modified events
-		if event.Type == watch.Modified {
-			continue
-		}
+			//toss out modified events
+			if event.Type == watch.Modified {
+				continue
+			}
 
-		log.Printf("Processing node %s:%s with event %s \n", currentNode.Name, currentNode.Spec.ExternalID, event.Type)
+			log.Printf("Processing node %s:%s with event %s \n", currentNode.Name, currentNode.Spec.ExternalID, event.Type)
 
-		//filter out certain nodes if desired based on the node labels
-		if s.LabelFilterKey != "" && s.LabelFilterValue != "" && currentNode.Labels[s.LabelFilterKey] != s.LabelFilterValue {
-			log.Printf("Ignoring node due to label filter: %s with label %s:%s \n", currentNode.Name, s.LabelFilterKey, currentNode.Labels[s.LabelFilterKey])
-			continue
-		}
+			//filter out certain nodes if desired based on the node labels
+			if s.LabelFilterKey != "" && s.LabelFilterValue != "" && currentNode.Labels[s.LabelFilterKey] != s.LabelFilterValue {
+				log.Printf("Ignoring node due to label filter: %s with label %s:%s \n", currentNode.Name, s.LabelFilterKey, currentNode.Labels[s.LabelFilterKey])
+				continue
+			}
 
-		for _, targetarn := range targetarns {
-			switch event.Type {
-			case watch.Added:
-				result, err := AddTarget(svc, targetarn, currentNode.Spec.ExternalID)
-				if err != nil {
-					log.Printf("error encountered adding node %s to target arn %s \n", currentNode.Spec.ExternalID, targetarn)
-				} else {
-					log.Printf("results of %s being added as a target %s of %s \n", currentNode.Spec.ExternalID, targetarn, result.GoString())
+			for _, targetarn := range targetarns {
+				switch event.Type {
+				case watch.Added:
+					result, err := AddTarget(svc, targetarn, currentNode.Spec.ExternalID)
+					if err != nil {
+						log.Printf("error encountered adding node %s to target arn %s \n", currentNode.Spec.ExternalID, targetarn)
+					} else {
+						log.Printf("results of %s being added as a target %s of %s \n", currentNode.Spec.ExternalID, targetarn, result.GoString())
+					}
+					break
+
+				case watch.Deleted:
+					result, err := DeregisterTarget(svc, targetarn, currentNode.Spec.ExternalID)
+					if err != nil {
+						log.Printf("error encountered removing node %s to target arn %s \n", currentNode.Spec.ExternalID, targetarn)
+					} else {
+						log.Printf("results of %s being removed as a target %s of %s \n", currentNode.Spec.ExternalID, targetarn, result.GoString())
+					}
+					break
 				}
-				break
-
-			case watch.Deleted:
-				result, err := DeregisterTarget(svc, targetarn, currentNode.Spec.ExternalID)
-				if err != nil {
-					log.Printf("error encountered removing node %s to target arn %s \n", currentNode.Spec.ExternalID, targetarn)
-				} else {
-					log.Printf("results of %s being removed as a target %s of %s \n", currentNode.Spec.ExternalID, targetarn, result.GoString())
-				}
-				break
 			}
 		}
 	}
-}
-
-// handleSyscalls returns a channel configured to recieve the desired syscalls.
-func handleSyscalls(signals ...os.Signal) <-chan os.Signal {
-	signalChan := make(chan os.Signal)
-	signal.Notify(signalChan, signals...)
-
-	return signalChan
-}
-
-// stopOnSignal waits until a signal is recieved from the os, and then waits for all the worker goroutines to stop too.
-func stopOnSignal(signalChan <-chan os.Signal) string {
-	<-signalChan
-	return ("Terminating...")
 }
 
 func provideMetrics() {
