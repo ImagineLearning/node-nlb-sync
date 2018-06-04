@@ -1,10 +1,12 @@
 package main
 
 import (
-	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 
 	"k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/watch"
@@ -35,26 +37,35 @@ type Specification struct {
 var s Specification
 
 func main() {
+
+	log.SetFlags(log.LstdFlags | log.LUTC)
+
 	err := envconfig.Process("nlb_sync", &s)
 	if err != nil {
-		panic("Could not read environment variables: " + err.Error())
+		log.Panic("Could not read environment variables: " + err.Error())
 	}
 
 	go provideMetrics()
+	go handleMessages(s)
 
+	// Setup for a graceful worker exit on container shutdown
+	signalChan := handleSyscalls(syscall.SIGTERM, syscall.SIGINT)
+	log.Fatal(stopOnSignal(signalChan))
+}
+
+func handleMessages(spec Specification) {
 	targetarns := strings.Split(s.TargetGroupArns, ",")
 
 	// creates the in-cluster config
 	config, err := rest.InClusterConfig()
 	if err != nil {
-		panic(err.Error())
+		log.Panic(err.Error())
 	}
-	fmt.Println(config)
 
 	// creates the clientset
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
-		panic(err.Error())
+		log.Panic(err.Error())
 	}
 
 	//this will by default look for the env vars AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY which should exist
@@ -63,7 +74,7 @@ func main() {
 	)
 	svc := elbv2.New(sess)
 
-	fmt.Println("Reading node events...")
+	log.Println("Reading node events...")
 	watcher, err := clientset.CoreV1().Nodes().Watch(metav1.ListOptions{})
 	channel := watcher.ResultChan()
 
@@ -76,11 +87,11 @@ func main() {
 			continue
 		}
 
-		fmt.Printf("Processing node %s:%s with event %s \n", currentNode.Name, currentNode.Spec.ExternalID, event.Type)
+		log.Printf("Processing node %s:%s with event %s \n", currentNode.Name, currentNode.Spec.ExternalID, event.Type)
 
 		//filter out certain nodes if desired based on the node labels
 		if s.LabelFilterKey != "" && s.LabelFilterValue != "" && currentNode.Labels[s.LabelFilterKey] != s.LabelFilterValue {
-			fmt.Printf("Ignoring node due to label filter: %s with label %s:%s \n", currentNode.Name, s.LabelFilterKey, currentNode.Labels[s.LabelFilterKey])
+			log.Printf("Ignoring node due to label filter: %s with label %s:%s \n", currentNode.Name, s.LabelFilterKey, currentNode.Labels[s.LabelFilterKey])
 			continue
 		}
 
@@ -89,23 +100,37 @@ func main() {
 			case watch.Added:
 				result, err := AddTarget(svc, targetarn, currentNode.Spec.ExternalID)
 				if err != nil {
-					fmt.Printf("error encountered adding node %s to target arn %s \n", currentNode.Spec.ExternalID, targetarn)
+					log.Printf("error encountered adding node %s to target arn %s \n", currentNode.Spec.ExternalID, targetarn)
 				} else {
-					fmt.Printf("results of %s being added as a target %s of %s \n", currentNode.Spec.ExternalID, targetarn, result.GoString())
+					log.Printf("results of %s being added as a target %s of %s \n", currentNode.Spec.ExternalID, targetarn, result.GoString())
 				}
 				break
 
 			case watch.Deleted:
 				result, err := DeregisterTarget(svc, targetarn, currentNode.Spec.ExternalID)
 				if err != nil {
-					fmt.Printf("error encountered removing node %s to target arn %s \n", currentNode.Spec.ExternalID, targetarn)
+					log.Printf("error encountered removing node %s to target arn %s \n", currentNode.Spec.ExternalID, targetarn)
 				} else {
-					fmt.Printf("results of %s being removed as a target %s of %s \n", currentNode.Spec.ExternalID, targetarn, result.GoString())
+					log.Printf("results of %s being removed as a target %s of %s \n", currentNode.Spec.ExternalID, targetarn, result.GoString())
 				}
 				break
 			}
 		}
 	}
+}
+
+// handleSyscalls returns a channel configured to recieve the desired syscalls.
+func handleSyscalls(signals ...os.Signal) <-chan os.Signal {
+	signalChan := make(chan os.Signal)
+	signal.Notify(signalChan, signals...)
+
+	return signalChan
+}
+
+// stopOnSignal waits until a signal is recieved from the os, and then waits for all the worker goroutines to stop too.
+func stopOnSignal(signalChan <-chan os.Signal) string {
+	<-signalChan
+	return ("Terminating...")
 }
 
 func provideMetrics() {
@@ -133,20 +158,20 @@ func AddTarget(svc *elbv2.ELBV2, targetArn string, nodeID string) (*elbv2.Regist
 		if aerr, ok := err.(awserr.Error); ok {
 			switch aerr.Code() {
 			case elbv2.ErrCodeTargetGroupNotFoundException:
-				fmt.Println(elbv2.ErrCodeTargetGroupNotFoundException, aerr.Error())
+				log.Println(elbv2.ErrCodeTargetGroupNotFoundException, aerr.Error())
 			case elbv2.ErrCodeTooManyTargetsException:
-				fmt.Println(elbv2.ErrCodeTooManyTargetsException, aerr.Error())
+				log.Println(elbv2.ErrCodeTooManyTargetsException, aerr.Error())
 			case elbv2.ErrCodeInvalidTargetException:
-				fmt.Println(elbv2.ErrCodeInvalidTargetException, aerr.Error())
+				log.Println(elbv2.ErrCodeInvalidTargetException, aerr.Error())
 			case elbv2.ErrCodeTooManyRegistrationsForTargetIdException:
-				fmt.Println(elbv2.ErrCodeTooManyRegistrationsForTargetIdException, aerr.Error())
+				log.Println(elbv2.ErrCodeTooManyRegistrationsForTargetIdException, aerr.Error())
 			default:
-				fmt.Println(aerr.Error())
+				log.Println(aerr.Error())
 			}
 		} else {
 			// Print the error, cast err to awserr.Error to get the Code and
 			// Message from an error.
-			fmt.Println(err.Error())
+			log.Println(err.Error())
 		}
 	}
 
@@ -170,16 +195,16 @@ func DeregisterTarget(svc *elbv2.ELBV2, targetArn string, nodeID string) (*elbv2
 		if aerr, ok := err.(awserr.Error); ok {
 			switch aerr.Code() {
 			case elbv2.ErrCodeTargetGroupNotFoundException:
-				fmt.Println(elbv2.ErrCodeTargetGroupNotFoundException, aerr.Error())
+				log.Println(elbv2.ErrCodeTargetGroupNotFoundException, aerr.Error())
 			case elbv2.ErrCodeInvalidTargetException:
-				fmt.Println(elbv2.ErrCodeInvalidTargetException, aerr.Error())
+				log.Println(elbv2.ErrCodeInvalidTargetException, aerr.Error())
 			default:
-				fmt.Println(aerr.Error())
+				log.Println(aerr.Error())
 			}
 		} else {
 			// Print the error, cast err to awserr.Error to get the Code and
 			// Message from an error.
-			fmt.Println(err.Error())
+			log.Println(err.Error())
 		}
 	}
 
