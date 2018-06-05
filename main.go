@@ -1,8 +1,13 @@
 package main
 
 import (
-	"fmt"
+	"log"
+	"net/http"
+	"os"
+	"os/signal"
 	"strings"
+	"sync"
+	"syscall"
 
 	"k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/watch"
@@ -15,35 +20,59 @@ import (
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/elbv2"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+
 	"github.com/kelseyhightower/envconfig"
 )
 
 //Specification has the necessary environment variables
 type Specification struct {
 	AWSRegion        string `default:"us-west-2"`
-	LoadBalancerArns string `required:"true"`
+	TargetGroupArns  string `required:"true"`
+	LabelFilterKey   string `default:""`
+	LabelFilterValue string `default:""`
+	Prometheus       bool   `default:"true"`
+	Port             string `default:"8080"`
 }
 
 var s Specification
 
 func main() {
-	err := envconfig.Process("node-nlb-sync", &s)
+
+	log.SetFlags(log.LstdFlags | log.LUTC)
+
+	err := envconfig.Process("nlb_sync", &s)
 	if err != nil {
-		panic("Could not read environment variables")
+		log.Panic("Could not read environment variables: " + err.Error())
 	}
-	targetarns := strings.Split(",", s.LoadBalancerArns)
+
+	go provideMetrics()
+
+	// Setup for a graceful worker exit on container shutdown
+	signalChan := make(chan os.Signal)
+	signal.Notify(signalChan, syscall.SIGTERM, syscall.SIGINT)
+
+	wg := &sync.WaitGroup{}
+	wg.Add(1)
+
+	go handleMessages(s, wg, signalChan)
+
+	wg.Wait()
+}
+
+func handleMessages(spec Specification, wg *sync.WaitGroup, exit <-chan os.Signal) {
+	targetarns := strings.Split(s.TargetGroupArns, ",")
 
 	// creates the in-cluster config
 	config, err := rest.InClusterConfig()
 	if err != nil {
-		panic(err.Error())
+		log.Panic(err.Error())
 	}
-	fmt.Println(config)
 
 	// creates the clientset
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
-		panic(err.Error())
+		log.Panic(err.Error())
 	}
 
 	//this will by default look for the env vars AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY which should exist
@@ -52,39 +81,62 @@ func main() {
 	)
 	svc := elbv2.New(sess)
 
+	log.Println("Reading node events...")
 	watcher, err := clientset.CoreV1().Nodes().Watch(metav1.ListOptions{})
 	channel := watcher.ResultChan()
 
 	for {
+		select {
+		case <-exit:
+			wg.Done()
+			return
+		case event := <-channel:
+			currentNode := event.Object.(*v1.Node)
 
-		event := <-channel
-		currentNode := event.Object.(*v1.Node)
-
-		//process each target arn
-		for _, targetarn := range targetarns {
-			switch event.Type {
-			case watch.Added:
-				fmt.Printf("node added %s \n", currentNode.Spec.ExternalID)
-				result, err := AddTarget(svc, targetarn, currentNode.Spec.ExternalID)
-				if err != nil {
-					fmt.Printf("error encountered adding node %s to target arn %s \n", currentNode.Spec.ExternalID, targetarn)
-				} else {
-					fmt.Printf("results of %s being added as a target %s of %x \n", currentNode.Spec.ExternalID, targetarn, result.GoString())
-				}
-				break
-
-			case watch.Deleted:
-				fmt.Printf("node deleted %s \n", currentNode.Spec.ExternalID)
-				result, err := DeregisterTarget(svc, targetarn, currentNode.Spec.ExternalID)
-				if err != nil {
-					fmt.Printf("error encountered removing node %s to target arn %s \n", currentNode.Spec.ExternalID, targetarn)
-				} else {
-					fmt.Printf("results of %s being removed as a target %s of %x \n", currentNode.Spec.ExternalID, targetarn, result.GoString())
-				}
-				break
+			//toss out modified events
+			if event.Type == watch.Modified {
+				continue
 			}
 
+			log.Printf("Processing node %s:%s with event %s \n", currentNode.Name, currentNode.Spec.ExternalID, event.Type)
+
+			//filter out certain nodes if desired based on the node labels
+			if s.LabelFilterKey != "" && s.LabelFilterValue != "" && currentNode.Labels[s.LabelFilterKey] != s.LabelFilterValue {
+				log.Printf("Ignoring node due to label filter: %s with label %s:%s \n", currentNode.Name, s.LabelFilterKey, currentNode.Labels[s.LabelFilterKey])
+				continue
+			}
+
+			for _, targetarn := range targetarns {
+				switch event.Type {
+				case watch.Added:
+					result, err := AddTarget(svc, targetarn, currentNode.Spec.ExternalID)
+					if err != nil {
+						log.Printf("error encountered adding node %s to target arn %s \n", currentNode.Spec.ExternalID, targetarn)
+					} else {
+						log.Printf("results of %s being added as a target %s of %s \n", currentNode.Spec.ExternalID, targetarn, result.GoString())
+					}
+					break
+
+				case watch.Deleted:
+					result, err := DeregisterTarget(svc, targetarn, currentNode.Spec.ExternalID)
+					if err != nil {
+						log.Printf("error encountered removing node %s to target arn %s \n", currentNode.Spec.ExternalID, targetarn)
+					} else {
+						log.Printf("results of %s being removed as a target %s of %s \n", currentNode.Spec.ExternalID, targetarn, result.GoString())
+					}
+					break
+				}
+			}
 		}
+	}
+}
+
+func provideMetrics() {
+	if s.Prometheus == true {
+		//add prometheus metrics
+		port := ":" + s.Port
+		http.Handle("/metrics", promhttp.Handler())
+		log.Fatal(http.ListenAndServe(port, nil))
 	}
 }
 
@@ -104,20 +156,20 @@ func AddTarget(svc *elbv2.ELBV2, targetArn string, nodeID string) (*elbv2.Regist
 		if aerr, ok := err.(awserr.Error); ok {
 			switch aerr.Code() {
 			case elbv2.ErrCodeTargetGroupNotFoundException:
-				fmt.Println(elbv2.ErrCodeTargetGroupNotFoundException, aerr.Error())
+				log.Println(elbv2.ErrCodeTargetGroupNotFoundException, aerr.Error())
 			case elbv2.ErrCodeTooManyTargetsException:
-				fmt.Println(elbv2.ErrCodeTooManyTargetsException, aerr.Error())
+				log.Println(elbv2.ErrCodeTooManyTargetsException, aerr.Error())
 			case elbv2.ErrCodeInvalidTargetException:
-				fmt.Println(elbv2.ErrCodeInvalidTargetException, aerr.Error())
+				log.Println(elbv2.ErrCodeInvalidTargetException, aerr.Error())
 			case elbv2.ErrCodeTooManyRegistrationsForTargetIdException:
-				fmt.Println(elbv2.ErrCodeTooManyRegistrationsForTargetIdException, aerr.Error())
+				log.Println(elbv2.ErrCodeTooManyRegistrationsForTargetIdException, aerr.Error())
 			default:
-				fmt.Println(aerr.Error())
+				log.Println(aerr.Error())
 			}
 		} else {
 			// Print the error, cast err to awserr.Error to get the Code and
 			// Message from an error.
-			fmt.Println(err.Error())
+			log.Println(err.Error())
 		}
 	}
 
@@ -141,16 +193,16 @@ func DeregisterTarget(svc *elbv2.ELBV2, targetArn string, nodeID string) (*elbv2
 		if aerr, ok := err.(awserr.Error); ok {
 			switch aerr.Code() {
 			case elbv2.ErrCodeTargetGroupNotFoundException:
-				fmt.Println(elbv2.ErrCodeTargetGroupNotFoundException, aerr.Error())
+				log.Println(elbv2.ErrCodeTargetGroupNotFoundException, aerr.Error())
 			case elbv2.ErrCodeInvalidTargetException:
-				fmt.Println(elbv2.ErrCodeInvalidTargetException, aerr.Error())
+				log.Println(elbv2.ErrCodeInvalidTargetException, aerr.Error())
 			default:
-				fmt.Println(aerr.Error())
+				log.Println(aerr.Error())
 			}
 		} else {
 			// Print the error, cast err to awserr.Error to get the Code and
 			// Message from an error.
-			fmt.Println(err.Error())
+			log.Println(err.Error())
 		}
 	}
 

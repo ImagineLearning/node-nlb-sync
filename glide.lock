@@ -1,8 +1,8 @@
 hash: f5290cc4a45844c70b97a13892a7d4390b7eb8c6eb50343e30dab0fdea93d8af
-updated: 2018-06-01T16:26:17.788719-06:00
+updated: 2018-06-04T15:41:20.520954-06:00
 imports:
 - name: github.com/aws/aws-sdk-go
-  version: b2e866cc3d25372c6bde1ce18dbbf11862e954e9
+  version: fa6920f8a13b1a715bffcf2b943dab0cacf5f423
   subpackages:
   - aws
   - aws/awserr
@@ -14,6 +14,7 @@ imports:
   - aws/credentials/ec2rolecreds
   - aws/credentials/endpointcreds
   - aws/credentials/stscreds
+  - aws/csm
   - aws/defaults
   - aws/ec2metadata
   - aws/endpoints
@@ -30,6 +31,10 @@ imports:
   - private/protocol/xml/xmlutil
   - service/elbv2
   - service/sts
+- name: github.com/beorn7/perks
+  version: 3a771d992973f24aa725d07868b467d1ddfceafb
+  subpackages:
+  - quantile
 - name: github.com/emicklei/go-restful
   version: ff4f55a206334ef123e4f79bbf348980da81ca46
   subpackages:
@@ -89,8 +94,33 @@ imports:
   - buffer
   - jlexer
   - jwriter
+- name: github.com/matttproud/golang_protobuf_extensions
+  version: c12348ce28de40eed0136aa2b644d0ee0650e56c
+  subpackages:
+  - pbutil
 - name: github.com/peterbourgon/diskv
   version: 5f041e8faa004a95c88a202771f4cc3e991971e6
+- name: github.com/prometheus/client_golang
+  version: 7540c0707421d7c58cfce34f4294d1b1f25f240d
+  subpackages:
+  - prometheus
+  - prometheus/promhttp
+- name: github.com/prometheus/client_model
+  version: 99fa1f4be8e564e8a6b613da7fa6f46c9edafc6c
+  subpackages:
+  - go
+- name: github.com/prometheus/common
+  version: 7600349dcfe1abd18d72d3a1770870d9800a7801
+  subpackages:
+  - expfmt
+  - internal/bitbucket.org/ww/goautoneg
+  - model
+- name: github.com/prometheus/procfs
+  version: 94663424ae5ae9856b40a9f170762b4197024661
+  subpackages:
+  - internal/util
+  - nfs
+  - xfs
 - name: github.com/PuerkitoBio/purell
   version: 8a290539e2e8629dbc4e6bad948158f790ec31f4
 - name: github.com/PuerkitoBio/urlesc
