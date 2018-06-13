@@ -60,7 +60,18 @@ func main() {
 	wg.Wait()
 }
 
+func handlePanic(spec Specification, wg *sync.WaitGroup, exit <-chan os.Signal) {
+	//Apparently k8s occasionally gets "error: unexpected EOF" from the watch function, this will just restart the loop without a container restart
+	err := recover()
+	log.Printf("Panic received in handleMessages(): %s, restarting handleMessages loop", err)
+
+	go handleMessages(spec, wg, exit)
+}
+
 func handleMessages(spec Specification, wg *sync.WaitGroup, exit <-chan os.Signal) {
+
+	defer handlePanic(spec, wg, exit)
+
 	targetarns := strings.Split(s.TargetGroupArns, ",")
 
 	// creates the in-cluster config
@@ -91,7 +102,12 @@ func handleMessages(spec Specification, wg *sync.WaitGroup, exit <-chan os.Signa
 			wg.Done()
 			return
 		case event := <-channel:
-			currentNode := event.Object.(*v1.Node)
+			currentNode, ok := event.Object.(*v1.Node)
+
+			if !ok {
+				log.Printf("Type assertion failed for event type %s: %#v \n", event.Type, event.Object)
+				continue
+			}
 
 			//toss out modified events
 			if event.Type == watch.Modified {
@@ -109,20 +125,20 @@ func handleMessages(spec Specification, wg *sync.WaitGroup, exit <-chan os.Signa
 			for _, targetarn := range targetarns {
 				switch event.Type {
 				case watch.Added:
-					result, err := AddTarget(svc, targetarn, currentNode.Spec.ExternalID)
+					_, err := AddTarget(svc, targetarn, currentNode.Spec.ExternalID)
 					if err != nil {
 						log.Printf("error encountered adding node %s to target arn %s \n", currentNode.Spec.ExternalID, targetarn)
 					} else {
-						log.Printf("results of %s being added as a target %s of %s \n", currentNode.Spec.ExternalID, targetarn, result.GoString())
+						log.Printf("%s added as a target %s \n", currentNode.Spec.ExternalID, targetarn)
 					}
 					break
 
 				case watch.Deleted:
-					result, err := DeregisterTarget(svc, targetarn, currentNode.Spec.ExternalID)
+					_, err := DeregisterTarget(svc, targetarn, currentNode.Spec.ExternalID)
 					if err != nil {
 						log.Printf("error encountered removing node %s to target arn %s \n", currentNode.Spec.ExternalID, targetarn)
 					} else {
-						log.Printf("results of %s being removed as a target %s of %s \n", currentNode.Spec.ExternalID, targetarn, result.GoString())
+						log.Printf("%s removed as a target %s \n", currentNode.Spec.ExternalID, targetarn)
 					}
 					break
 				}
