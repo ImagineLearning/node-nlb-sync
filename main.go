@@ -96,7 +96,7 @@ func handleMessages(spec Specification, wg *sync.WaitGroup, exit <-chan os.Signa
 			if !ok {
 				//occasionally we get a failed watch command with bad events, the only way to recover seems to be to restart the container
 				//this will panic but that will make it so k8s restarts the container until we get working events
-				log.Panicf("Type assertion failed for event type %s: %#v \n", event.Type, event.Object)
+				log.Fatalf("Type assertion failed for event type %s: %#v \n", event.Type, event.Object)
 			}
 
 			//toss out modified events
