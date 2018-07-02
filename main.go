@@ -60,17 +60,7 @@ func main() {
 	wg.Wait()
 }
 
-func handlePanic(spec Specification, wg *sync.WaitGroup, exit <-chan os.Signal) {
-	//Apparently k8s occasionally gets "error: unexpected EOF" from the watch function, this will just restart the loop without a container restart
-	err := recover()
-	log.Printf("Panic received in handleMessages(): %s, restarting handleMessages loop", err)
-
-	go handleMessages(spec, wg, exit)
-}
-
 func handleMessages(spec Specification, wg *sync.WaitGroup, exit <-chan os.Signal) {
-
-	defer handlePanic(spec, wg, exit)
 
 	targetarns := strings.Split(s.TargetGroupArns, ",")
 
@@ -80,7 +70,6 @@ func handleMessages(spec Specification, wg *sync.WaitGroup, exit <-chan os.Signa
 		log.Panic(err.Error())
 	}
 
-	// creates the clientset
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
 		log.Panic(err.Error())
@@ -105,8 +94,9 @@ func handleMessages(spec Specification, wg *sync.WaitGroup, exit <-chan os.Signa
 			currentNode, ok := event.Object.(*v1.Node)
 
 			if !ok {
-				log.Printf("Type assertion failed for event type %s: %#v \n", event.Type, event.Object)
-				continue
+				//occasionally we get a failed watch command with bad events, the only way to recover seems to be to restart the container
+				//this will panic but that will make it so k8s restarts the container until we get working events
+				log.Panicf("Type assertion failed for event type %s: %#v \n", event.Type, event.Object)
 			}
 
 			//toss out modified events
