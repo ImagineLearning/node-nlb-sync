@@ -104,7 +104,10 @@ func handleMessages(spec Specification, wg *sync.WaitGroup, exit <-chan os.Signa
 				continue
 			}
 
-			log.Printf("Processing node %s:%s with event %s \n", currentNode.Name, currentNode.Spec.ExternalID, event.Type)
+			log.Printf("Processing node %s:%s with event %s \n", currentNode.Name, currentNode.Spec.ProviderID, event.Type)
+			instanceIDParts := strings.Split(currentNode.Spec.ProviderID, "/")
+			instanceID := instanceIDParts[len(instanceIDParts)-1]
+			log.Printf("Final node id: %s \n", instanceID)
 
 			//filter out certain nodes if desired based on the node labels
 			if s.LabelFilterKey != "" && s.LabelFilterValue != "" && currentNode.Labels[s.LabelFilterKey] != s.LabelFilterValue {
@@ -115,20 +118,20 @@ func handleMessages(spec Specification, wg *sync.WaitGroup, exit <-chan os.Signa
 			for _, targetarn := range targetarns {
 				switch event.Type {
 				case watch.Added:
-					_, err := AddTarget(svc, targetarn, currentNode.Spec.ExternalID)
+					_, err := AddTarget(svc, targetarn, instanceID)
 					if err != nil {
-						log.Printf("error encountered adding node %s to target arn %s \n", currentNode.Spec.ExternalID, targetarn)
+						log.Printf("error encountered adding node %s to target arn %s \n", instanceID, targetarn)
 					} else {
-						log.Printf("%s added as a target %s \n", currentNode.Spec.ExternalID, targetarn)
+						log.Printf("%s added as a target %s \n", instanceID, targetarn)
 					}
 					break
 
 				case watch.Deleted:
-					_, err := DeregisterTarget(svc, targetarn, currentNode.Spec.ExternalID)
+					_, err := DeregisterTarget(svc, targetarn, instanceID)
 					if err != nil {
-						log.Printf("error encountered removing node %s to target arn %s \n", currentNode.Spec.ExternalID, targetarn)
+						log.Printf("error encountered removing node %s to target arn %s \n", instanceID, targetarn)
 					} else {
-						log.Printf("%s removed as a target %s \n", currentNode.Spec.ExternalID, targetarn)
+						log.Printf("%s removed as a target %s \n", instanceID, targetarn)
 					}
 					break
 				}
