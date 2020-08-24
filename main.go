@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"os"
@@ -9,7 +10,7 @@ import (
 	"sync"
 	"syscall"
 
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/watch"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -82,7 +83,7 @@ func handleMessages(spec Specification, wg *sync.WaitGroup, exit <-chan os.Signa
 	svc := elbv2.New(sess)
 
 	log.Println("Reading node events...")
-	watcher, err := clientset.CoreV1().Nodes().Watch(metav1.ListOptions{})
+	watcher, err := clientset.CoreV1().Nodes().Watch(context.TODO(), metav1.ListOptions{})
 	channel := watcher.ResultChan()
 
 	for {
